@@ -56,7 +56,7 @@ extern crate mio;
 use std::env;
 use std::process;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, ErrorKind};
 use std::time::Duration;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -285,19 +285,27 @@ fn polling_loop(addr: &SocketAddr, mut ephemeral_key: &mut Signer, cert_bytes: &
         for event in events.iter() {
             match event.token() {
                 MESSAGE => {
-                    let (num_bytes, src_addr) = socket.recv_from(&mut buf).expect("recv_from failed");
+                    loop {
+                        let (num_bytes, src_addr) = match socket.recv_from(&mut buf) {
+                            Ok(res) => res,
+                            Err(e) => match e.kind() {
+                                ErrorKind::WouldBlock => break,
+                                _ => panic!("recv_from failed with {:?}", e)
+                            }
+                        };
 
-                    if let Ok(nonce) = nonce_from_request(&buf, num_bytes) {
-                        let resp = make_response(&mut ephemeral_key, cert_bytes, nonce);
-                        let resp_bytes = resp.encode().unwrap();
+                        if let Ok(nonce) = nonce_from_request(&buf, num_bytes) {
+                            let resp = make_response(&mut ephemeral_key, cert_bytes, nonce);
+                            let resp_bytes = resp.encode().unwrap();
 
-                        socket.send_to(&resp_bytes, &src_addr).expect("send_to failed");
+                            socket.send_to(&resp_bytes, &src_addr).expect("send_to failed");
 
-                        info!("Responded to {}", src_addr);
-                        num_responses += 1;
-                    } else {
-                        info!("invalid request ({} bytes) from {}", num_bytes, src_addr);
-                        num_bad_requests += 1;
+                            info!("Responded to {}", src_addr);
+                            num_responses += 1;
+                        } else {
+                            info!("invalid request ({} bytes) from {}", num_bytes, src_addr);
+                            num_bad_requests += 1;
+                        }
                     }
                 }
 
